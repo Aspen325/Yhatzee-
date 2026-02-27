@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yahtzee - Online Multiplayer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- ─── LOBBY SCREEN ─── -->
+  <div id="lobby-screen" class="screen active">
+    <div class="lobby-container">
+      <div class="logo">
+        <div class="dice-logo">
+          <div class="logo-die">&#9860;</div>
+          <div class="logo-die">&#9859;</div>
+          <div class="logo-die">&#9858;</div>
+          <div class="logo-die">&#9857;</div>
+          <div class="logo-die">&#9856;</div>
+        </div>
+        <h1>YAHTZEE</h1>
+        <p class="subtitle">Online Multiplayer</p>
+      </div>
+
+      <div class="lobby-card">
+        <div class="input-group">
+          <label for="player-name">Your Name</label>
+          <input type="text" id="player-name" placeholder="Enter your name" maxlength="16" autocomplete="off">
+        </div>
+
+        <div class="lobby-actions">
+          <button id="btn-create" class="btn btn-primary">Create Game</button>
+          <div class="divider"><span>or</span></div>
+          <div class="join-row">
+            <input type="text" id="room-code-input" placeholder="Room Code" maxlength="5" autocomplete="off">
+            <button id="btn-join" class="btn btn-secondary">Join</button>
+          </div>
+        </div>
+
+        <div class="player-count-select">
+          <label>Players:</label>
+          <div class="player-count-btns">
+            <button class="count-btn active" data-count="2">2</button>
+            <button class="count-btn" data-count="3">3</button>
+            <button class="count-btn" data-count="4">4</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="error-message" class="error-msg hidden"></div>
+    </div>
+  </div>
+
+  <!-- ─── WAITING ROOM ─── -->
+  <div id="waiting-screen" class="screen">
+    <div class="waiting-container">
+      <div class="waiting-card">
+        <h2>Waiting for Players</h2>
+        <div class="room-code-display">
+          <span class="label">Room Code</span>
+          <span id="display-room-code" class="code">-----</span>
+          <button id="btn-copy-code" class="btn-copy" title="Copy code">📋</button>
+        </div>
+        <div id="player-list" class="player-list"></div>
+        <button id="btn-start" class="btn btn-primary btn-start hidden">Start Game</button>
+        <p class="waiting-hint">Share the room code with your friends!</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── GAME SCREEN ─── -->
+  <div id="game-screen" class="screen">
+    <div class="game-layout">
+      <!-- Top bar -->
+      <div class="game-topbar">
+        <div class="game-title">YAHTZEE</div>
+        <div id="turn-indicator" class="turn-indicator"></div>
+        <div id="round-indicator" class="round-indicator">Round 1 / 13</div>
+      </div>
+
+      <!-- Main game area -->
+      <div class="game-main">
+        <!-- Scorecard -->
+        <div class="scorecard-panel">
+          <div class="scorecard-scroll">
+            <table class="scorecard" id="scorecard">
+              <thead>
+                <tr>
+                  <th class="cat-header">Category</th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- Upper Section -->
+                <tr class="section-header"><td colspan="99">UPPER SECTION</td></tr>
+                <tr data-cat="ones"><td class="cat-name"><span class="cat-icon">⚀</span> Ones</td></tr>
+                <tr data-cat="twos"><td class="cat-name"><span class="cat-icon">⚁</span> Twos</td></tr>
+                <tr data-cat="threes"><td class="cat-name"><span class="cat-icon">⚂</span> Threes</td></tr>
+                <tr data-cat="fours"><td class="cat-name"><span class="cat-icon">⚃</span> Fours</td></tr>
+                <tr data-cat="fives"><td class="cat-name"><span class="cat-icon">⚄</span> Fives</td></tr>
+                <tr data-cat="sixes"><td class="cat-name"><span class="cat-icon">⚅</span> Sixes</td></tr>
+                <tr class="total-row upper-total-row"><td class="cat-name">Upper Total</td></tr>
+                <tr class="total-row bonus-row"><td class="cat-name">Bonus (≥63 → +35)</td></tr>
+                <!-- Lower Section -->
+                <tr class="section-header"><td colspan="99">LOWER SECTION</td></tr>
+                <tr data-cat="threeOfAKind"><td class="cat-name">3 of a Kind</td></tr>
+                <tr data-cat="fourOfAKind"><td class="cat-name">4 of a Kind</td></tr>
+                <tr data-cat="fullHouse"><td class="cat-name">Full House</td></tr>
+                <tr data-cat="smallStraight"><td class="cat-name">Sm. Straight</td></tr>
+                <tr data-cat="largeStraight"><td class="cat-name">Lg. Straight</td></tr>
+                <tr data-cat="yahtzee"><td class="cat-name">YAHTZEE</td></tr>
+                <tr data-cat="chance"><td class="cat-name">Chance</td></tr>
+                <tr class="total-row yahtzee-bonus-row"><td class="cat-name">Yahtzee Bonus</td></tr>
+                <tr class="total-row lower-total-row"><td class="cat-name">Lower Total</td></tr>
+                <tr class="total-row grand-total-row"><td class="cat-name"><strong>Grand Total</strong></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Dice + controls -->
+        <div class="dice-panel">
+          <div class="dice-area">
+            <div id="dice-container" class="dice-container">
+              <div class="die-wrapper" data-index="0">
+                <div class="die blank" id="die-0"></div>
+                <div class="hold-label hidden">HOLD</div>
+              </div>
+              <div class="die-wrapper" data-index="1">
+                <div class="die blank" id="die-1"></div>
+                <div class="hold-label hidden">HOLD</div>
+              </div>
+              <div class="die-wrapper" data-index="2">
+                <div class="die blank" id="die-2"></div>
+                <div class="hold-label hidden">HOLD</div>
+              </div>
+              <div class="die-wrapper" data-index="3">
+                <div class="die blank" id="die-3"></div>
+                <div class="hold-label hidden">HOLD</div>
+              </div>
+              <div class="die-wrapper" data-index="4">
+                <div class="die blank" id="die-4"></div>
+                <div class="hold-label hidden">HOLD</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="controls">
+            <button id="btn-roll" class="btn btn-roll">
+              🎲 Roll Dice
+              <span id="rolls-left" class="rolls-badge">3</span>
+            </button>
+          </div>
+
+          <div id="score-hint" class="score-hint hidden">
+            Click a category on the scorecard to score your roll
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── GAME OVER MODAL ─── -->
+  <div id="game-over-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <h2 id="winner-text">🏆 Game Over!</h2>
+      <div id="final-scores" class="final-scores"></div>
+      <button id="btn-play-again" class="btn btn-primary">Play Again</button>
+    </div>
+  </div>
+
+  <!-- ─── TOOLTIP ─── -->
+  <div id="tooltip" class="tooltip hidden"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/game.js"></script>
+</body>
+</html>
