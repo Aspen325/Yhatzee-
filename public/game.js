@@ -10,6 +10,7 @@ let isHost = false;
 let selectedMaxPlayers = 2;
 let dicePhysics = []; // physics objects for each die
 let animating = false;
+let animationFrameId = null;
 let finalDiceValues = [0,0,0,0,0];
 
 // ─── DOM refs ──────────────────────────────────────────────
@@ -119,6 +120,17 @@ socket.on('game-state', (state) => {
 
   if (state.started) {
     showScreen(gameScreen);
+
+    // When dice are reset (new turn starting), cancel any in-flight animation
+    // so the dice disappear immediately and controls update correctly.
+    if (animating && state.dice.every(d => d === 0)) {
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
+      animating = false;
+    }
+
     renderGame();
     const cp = state.players[state.currentPlayerIndex];
     if (cp && cp.id === myId && state.rollsLeft < 3) {
@@ -321,7 +333,7 @@ function launchDiceAnimation(finalValues) {
   }
 
   const startTime = performance.now();
-  requestAnimationFrame(function animate(now) {
+  animationFrameId = requestAnimationFrame(function animate(now) {
     const elapsed = now - startTime;
     const progress = Math.min(elapsed / ANIM_DURATION, 1);
     const bounds = getTableBounds();
@@ -408,8 +420,9 @@ function launchDiceAnimation(finalValues) {
     }
 
     if (progress < 1) {
-      requestAnimationFrame(animate);
+      animationFrameId = requestAnimationFrame(animate);
     } else {
+      animationFrameId = null;
       // Final snap: ensure each die shows correct face
       for (let i = 0; i < 5; i++) {
         const dp = dicePhysics[i];
@@ -425,8 +438,8 @@ function launchDiceAnimation(finalValues) {
       }
       animating = false;
 
-      // After animation, re-render with held state
-      if (gameState) renderDiceStatic();
+      // Re-render full UI so controls (roll button) reflect the current state
+      if (gameState) renderGame();
     }
   });
 }
