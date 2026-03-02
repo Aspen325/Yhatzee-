@@ -157,11 +157,14 @@ socket.on('player-disconnected', () => {});
 
 const DIE_SIZE = 64;
 const HALF = DIE_SIZE / 2;
-const ANIM_DURATION = 2100; // ms total
+const ANIM_DURATION = 2600; // ms total
 const FRAME_TIME = 16.667; // ~60fps baseline for dt normalization
-const FRICTION = 0.985;
-const ANGULAR_FRICTION = 0.98;
-const WALL_BOUNCE = 0.6;
+const FRICTION = 0.992;
+const ANGULAR_FRICTION = 0.986;
+const WALL_BOUNCE = 0.72;
+const DIE_COLLISION_DISTANCE = DIE_SIZE * 0.9;
+const DIE_COLLISION_PUSH = 0.6;
+const SLOT_SETTLE_FORCE = 0.03;
 
 // Rotation values that show each face front-facing
 const FACE_ROTATIONS = {
@@ -242,6 +245,87 @@ function setShadowPosition(dp) {
   dp.shadow.style.transform = `translate3d(${dp.x + 2}px, ${dp.y + DIE_SIZE + 2}px, 0) scaleX(${dp.shadowScale || 1})`;
 }
 
+function getLandingSlots(bounds) {
+  const centerX = bounds.w / 2 - HALF;
+  const centerY = bounds.h / 2 - HALF;
+  const orbitRadiusX = Math.min(128, Math.max(84, bounds.w * 0.16));
+  const orbitRadiusY = Math.min(90, Math.max(64, bounds.h * 0.16));
+  const angleOffset = (Math.random() - 0.5) * 0.35;
+
+  return Array.from({ length: 5 }, (_, i) => {
+    const angle = angleOffset + i * ((Math.PI * 2) / 5);
+    const jitterX = (Math.random() - 0.5) * 10;
+    const jitterY = (Math.random() - 0.5) * 8;
+
+    return {
+      x: centerX + Math.cos(angle) * orbitRadiusX + jitterX,
+      y: centerY + Math.sin(angle) * orbitRadiusY + jitterY,
+    };
+  });
+}
+
+function applyDieCollisions(bounds) {
+  const margin = 20;
+  const minX = margin;
+  const maxX = bounds.w - DIE_SIZE - margin;
+  const minY = margin;
+  const maxY = bounds.h - DIE_SIZE - margin;
+
+  for (let i = 0; i < dicePhysics.length; i++) {
+    for (let j = i + 1; j < dicePhysics.length; j++) {
+      const a = dicePhysics[i];
+      const b = dicePhysics[j];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const dist = Math.hypot(dx, dy);
+      if (!dist || dist >= DIE_COLLISION_DISTANCE) continue;
+
+      const overlap = DIE_COLLISION_DISTANCE - dist;
+      const nx = dx / dist;
+      const ny = dy / dist;
+
+      const aMovable = !a.held;
+      const bMovable = !b.held;
+
+      if (aMovable && bMovable) {
+        a.x -= nx * overlap * 0.5;
+        a.y -= ny * overlap * 0.5;
+        b.x += nx * overlap * 0.5;
+        b.y += ny * overlap * 0.5;
+      } else if (aMovable) {
+        a.x -= nx * overlap;
+        a.y -= ny * overlap;
+      } else if (bMovable) {
+        b.x += nx * overlap;
+        b.y += ny * overlap;
+      }
+
+      const impulseX = nx * DIE_COLLISION_PUSH;
+      const impulseY = ny * DIE_COLLISION_PUSH;
+
+      if (aMovable) {
+        a.vx -= impulseX;
+        a.vy -= impulseY;
+        a.vRotZ += (Math.random() - 0.5) * 3;
+      }
+      if (bMovable) {
+        b.vx += impulseX;
+        b.vy += impulseY;
+        b.vRotZ += (Math.random() - 0.5) * 3;
+      }
+
+      if (aMovable) {
+        a.x = Math.min(maxX, Math.max(minX, a.x));
+        a.y = Math.min(maxY, Math.max(minY, a.y));
+      }
+      if (bMovable) {
+        b.x = Math.min(maxX, Math.max(minX, b.x));
+        b.y = Math.min(maxY, Math.max(minY, b.y));
+      }
+    }
+  }
+}
+
 function initDice() {
   feltSurface.innerHTML = '';
   dicePhysics = [];
@@ -288,6 +372,8 @@ function launchDiceAnimation(finalValues) {
   const bounds = getTableBounds();
   const margin = 20; // inside the wood border
 
+  const landingSlots = getLandingSlots(bounds);
+
   for (let i = 0; i < 5; i++) {
     const dp = dicePhysics[i];
 
@@ -301,38 +387,36 @@ function launchDiceAnimation(finalValues) {
     dp.settled = false;
     dp.el.style.opacity = '1';
 
-    // Launch from random edge positions with velocity toward center
-    const side = Math.random();
-    if (side < 0.25) {
-      // from left
-      dp.x = margin;
+    dp.slotX = landingSlots[i].x;
+    dp.slotY = landingSlots[i].y;
+
+    // Launch from outside edges, aiming through the board for a stronger roll feel
+    const side = Math.floor(Math.random() * 4);
+    if (side === 0) {
+      dp.x = -DIE_SIZE - 8;
       dp.y = margin + Math.random() * (bounds.h - DIE_SIZE - margin * 2);
-      dp.vx = 2.5 + Math.random() * 4;
-      dp.vy = (Math.random() - 0.5) * 3;
-    } else if (side < 0.5) {
-      // from right
-      dp.x = bounds.w - DIE_SIZE - margin;
+    } else if (side === 1) {
+      dp.x = bounds.w + 8;
       dp.y = margin + Math.random() * (bounds.h - DIE_SIZE - margin * 2);
-      dp.vx = -(2.5 + Math.random() * 4);
-      dp.vy = (Math.random() - 0.5) * 3;
-    } else if (side < 0.75) {
-      // from top
+    } else if (side === 2) {
       dp.x = margin + Math.random() * (bounds.w - DIE_SIZE - margin * 2);
-      dp.y = margin;
-      dp.vx = (Math.random() - 0.5) * 3;
-      dp.vy = 2.5 + Math.random() * 4;
+      dp.y = -DIE_SIZE - 8;
     } else {
-      // from bottom
       dp.x = margin + Math.random() * (bounds.w - DIE_SIZE - margin * 2);
-      dp.y = bounds.h - DIE_SIZE - margin;
-      dp.vx = (Math.random() - 0.5) * 3;
-      dp.vy = -(2.5 + Math.random() * 4);
+      dp.y = bounds.h + 8;
     }
 
+    const toSlotX = dp.slotX - dp.x;
+    const toSlotY = dp.slotY - dp.y;
+    const towardSlotLen = Math.max(1, Math.hypot(toSlotX, toSlotY));
+    const entrySpeed = 7 + Math.random() * 3;
+    dp.vx = (toSlotX / towardSlotLen) * entrySpeed + (Math.random() - 0.5) * 2.4;
+    dp.vy = (toSlotY / towardSlotLen) * entrySpeed + (Math.random() - 0.5) * 2.4;
+
     // Random spin with slightly lower jitter
-    dp.vRotX = (Math.random() - 0.5) * 22;
-    dp.vRotY = (Math.random() - 0.5) * 22;
-    dp.vRotZ = (Math.random() - 0.5) * 14;
+    dp.vRotX = (Math.random() - 0.5) * 34;
+    dp.vRotY = (Math.random() - 0.5) * 34;
+    dp.vRotZ = (Math.random() - 0.5) * 24;
   }
 
   const startTime = performance.now();
@@ -351,7 +435,7 @@ function launchDiceAnimation(finalValues) {
       if (dp.held || dp.settled) continue;
 
       // Smooth deceleration curve from energetic -> settled
-      const slowdown = 1 - (progress * progress * 0.72);
+      const slowdown = 1 - (progress * progress * 0.6);
 
       // Apply velocity with frame-normalized delta
       dp.x += dp.vx * slowdown * dt;
@@ -390,6 +474,14 @@ function launchDiceAnimation(finalValues) {
       dp.vRotY *= Math.pow(ANGULAR_FRICTION, dt);
       dp.vRotZ *= Math.pow(ANGULAR_FRICTION, dt);
 
+      // Pull toward its unique landing slot in the second half
+      if (progress > 0.5) {
+        const settleT = (progress - 0.5) / 0.5;
+        const slotPull = SLOT_SETTLE_FORCE * settleT;
+        dp.vx += (dp.slotX - dp.x) * slotPull;
+        dp.vy += (dp.slotY - dp.y) * slotPull;
+      }
+
       // Rotation
       dp.rotX += dp.vRotX * slowdown * dt;
       dp.rotY += dp.vRotY * slowdown * dt;
@@ -418,6 +510,8 @@ function launchDiceAnimation(finalValues) {
       dp.shadow.style.opacity = 0.28 + spinIntensity * 0.18;
     }
 
+    applyDieCollisions(bounds);
+
     if (progress < 1) {
       requestAnimationFrame(animate);
     } else {
@@ -430,6 +524,13 @@ function launchDiceAnimation(finalValues) {
         dp.rotX = target.x;
         dp.rotY = target.y;
         dp.rotZ = 0;
+        if (!dp.held) {
+          dp.x = dp.slotX;
+          dp.y = dp.slotY;
+          setDiePosition(dp);
+          dp.shadowScale = 1;
+          setShadowPosition(dp);
+        }
         dp.cube.style.transform = `rotateX(${target.x}deg) rotateY(${target.y}deg) rotateZ(0deg)`;
         dp.cube.style.transition = 'transform 0.2s ease-out';
         setTimeout(() => { dp.cube.style.transition = 'none'; }, 240);
