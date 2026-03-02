@@ -151,12 +151,11 @@ socket.on('player-disconnected', () => {});
 
 const DIE_SIZE = 64;
 const HALF = DIE_SIZE / 2;
-const ANIM_DURATION = 1800; // ms total
-const BOUNCE_DAMPING = 0.55;
-const FRICTION = 0.97;
-const ANGULAR_FRICTION = 0.96;
-const GRAVITY = 0.0015; // gentle downward pull to settle
-const WALL_BOUNCE = 0.5;
+const ANIM_DURATION = 2100; // ms total
+const FRAME_TIME = 16.667; // ~60fps baseline for dt normalization
+const FRICTION = 0.985;
+const ANGULAR_FRICTION = 0.98;
+const WALL_BOUNCE = 0.6;
 
 // Rotation values that show each face front-facing
 const FACE_ROTATIONS = {
@@ -293,54 +292,56 @@ function launchDiceAnimation(finalValues) {
       // from left
       dp.x = margin;
       dp.y = margin + Math.random() * (bounds.h - DIE_SIZE - margin * 2);
-      dp.vx = 4 + Math.random() * 6;
-      dp.vy = (Math.random() - 0.5) * 6;
+      dp.vx = 2.5 + Math.random() * 4;
+      dp.vy = (Math.random() - 0.5) * 3;
     } else if (side < 0.5) {
       // from right
       dp.x = bounds.w - DIE_SIZE - margin;
       dp.y = margin + Math.random() * (bounds.h - DIE_SIZE - margin * 2);
-      dp.vx = -(4 + Math.random() * 6);
-      dp.vy = (Math.random() - 0.5) * 6;
+      dp.vx = -(2.5 + Math.random() * 4);
+      dp.vy = (Math.random() - 0.5) * 3;
     } else if (side < 0.75) {
       // from top
       dp.x = margin + Math.random() * (bounds.w - DIE_SIZE - margin * 2);
       dp.y = margin;
-      dp.vx = (Math.random() - 0.5) * 6;
-      dp.vy = 4 + Math.random() * 6;
+      dp.vx = (Math.random() - 0.5) * 3;
+      dp.vy = 2.5 + Math.random() * 4;
     } else {
       // from bottom
       dp.x = margin + Math.random() * (bounds.w - DIE_SIZE - margin * 2);
       dp.y = bounds.h - DIE_SIZE - margin;
-      dp.vx = (Math.random() - 0.5) * 6;
-      dp.vy = -(4 + Math.random() * 6);
+      dp.vx = (Math.random() - 0.5) * 3;
+      dp.vy = -(2.5 + Math.random() * 4);
     }
 
-    // Random fast spin
-    dp.vRotX = (Math.random() - 0.5) * 30;
-    dp.vRotY = (Math.random() - 0.5) * 30;
-    dp.vRotZ = (Math.random() - 0.5) * 20;
+    // Random spin with slightly lower jitter
+    dp.vRotX = (Math.random() - 0.5) * 22;
+    dp.vRotY = (Math.random() - 0.5) * 22;
+    dp.vRotZ = (Math.random() - 0.5) * 14;
   }
 
   const startTime = performance.now();
+  let previousTime = startTime;
+
   requestAnimationFrame(function animate(now) {
     const elapsed = now - startTime;
     const progress = Math.min(elapsed / ANIM_DURATION, 1);
+    const dt = Math.min((now - previousTime) / FRAME_TIME, 2);
+    previousTime = now;
+
     const bounds = getTableBounds();
     const margin = 20;
-    let allSettled = true;
 
     for (let i = 0; i < 5; i++) {
       const dp = dicePhysics[i];
       if (dp.held || dp.settled) continue;
 
-      allSettled = false;
+      // Smooth deceleration curve from energetic -> settled
+      const slowdown = 1 - (progress * progress * 0.72);
 
-      // Slow down over time
-      const slowdown = 1 - progress * 0.6;
-
-      // Apply velocity
-      dp.x += dp.vx * slowdown;
-      dp.y += dp.vy * slowdown;
+      // Apply velocity with frame-normalized delta
+      dp.x += dp.vx * slowdown * dt;
+      dp.y += dp.vy * slowdown * dt;
 
       // Bounce off walls
       const minX = margin;
@@ -351,45 +352,44 @@ function launchDiceAnimation(finalValues) {
       if (dp.x < minX) {
         dp.x = minX;
         dp.vx = Math.abs(dp.vx) * WALL_BOUNCE;
-        dp.vRotY += (Math.random() - 0.5) * 10;
+        dp.vRotY += (Math.random() - 0.5) * 6;
       } else if (dp.x > maxX) {
         dp.x = maxX;
         dp.vx = -Math.abs(dp.vx) * WALL_BOUNCE;
-        dp.vRotY += (Math.random() - 0.5) * 10;
+        dp.vRotY += (Math.random() - 0.5) * 6;
       }
 
       if (dp.y < minY) {
         dp.y = minY;
         dp.vy = Math.abs(dp.vy) * WALL_BOUNCE;
-        dp.vRotX += (Math.random() - 0.5) * 10;
+        dp.vRotX += (Math.random() - 0.5) * 6;
       } else if (dp.y > maxY) {
         dp.y = maxY;
         dp.vy = -Math.abs(dp.vy) * WALL_BOUNCE;
-        dp.vRotX += (Math.random() - 0.5) * 10;
+        dp.vRotX += (Math.random() - 0.5) * 6;
       }
 
-      // Apply friction
-      dp.vx *= FRICTION;
-      dp.vy *= FRICTION;
-      dp.vRotX *= ANGULAR_FRICTION;
-      dp.vRotY *= ANGULAR_FRICTION;
-      dp.vRotZ *= ANGULAR_FRICTION;
+      // Apply friction using dt normalization
+      dp.vx *= Math.pow(FRICTION, dt);
+      dp.vy *= Math.pow(FRICTION, dt);
+      dp.vRotX *= Math.pow(ANGULAR_FRICTION, dt);
+      dp.vRotY *= Math.pow(ANGULAR_FRICTION, dt);
+      dp.vRotZ *= Math.pow(ANGULAR_FRICTION, dt);
 
       // Rotation
-      dp.rotX += dp.vRotX * slowdown;
-      dp.rotY += dp.vRotY * slowdown;
-      dp.rotZ += dp.vRotZ * slowdown;
+      dp.rotX += dp.vRotX * slowdown * dt;
+      dp.rotY += dp.vRotY * slowdown * dt;
+      dp.rotZ += dp.vRotZ * slowdown * dt;
 
-      // In the last 30% of animation, ease toward the final face rotation
-      if (progress > 0.7) {
-        const settle = (progress - 0.7) / 0.3; // 0 → 1
+      // In the last 35% of animation, ease toward the final face rotation
+      if (progress > 0.65) {
+        const settle = (progress - 0.65) / 0.35; // 0 → 1
         const ease = settle * settle * (3 - 2 * settle); // smoothstep
         const target = FACE_ROTATIONS[dp.targetValue];
 
-        // Snap rotation to nearest equivalent of target
-        dp.rotX = lerpAngle(dp.rotX, target.x, ease);
-        dp.rotY = lerpAngle(dp.rotY, target.y, ease);
-        dp.rotZ = dp.rotZ * (1 - ease); // flatten Z rotation
+        dp.rotX = lerpAngle(dp.rotX, target.x, ease * 0.18 + 0.04);
+        dp.rotY = lerpAngle(dp.rotY, target.y, ease * 0.18 + 0.04);
+        dp.rotZ *= (1 - ease * 0.2); // flatten Z rotation gradually
       }
 
       // Update DOM
@@ -401,11 +401,11 @@ function launchDiceAnimation(finalValues) {
       dp.shadow.style.left = (dp.x + 2) + 'px';
       dp.shadow.style.top = (dp.y + DIE_SIZE + 2) + 'px';
 
-      // Dynamic shadow size based on "height" (spin intensity)
-      const spinIntensity = Math.min(1, (Math.abs(dp.vRotX) + Math.abs(dp.vRotY)) / 20);
-      const shadowScale = 1 + spinIntensity * 0.4;
+      // Dynamic shadow size based on spin intensity
+      const spinIntensity = Math.min(1, (Math.abs(dp.vRotX) + Math.abs(dp.vRotY)) / 18);
+      const shadowScale = 1 + spinIntensity * 0.28;
       dp.shadow.style.transform = `scaleX(${shadowScale})`;
-      dp.shadow.style.opacity = 0.3 + spinIntensity * 0.2;
+      dp.shadow.style.opacity = 0.28 + spinIntensity * 0.18;
     }
 
     if (progress < 1) {
@@ -421,8 +421,8 @@ function launchDiceAnimation(finalValues) {
         dp.rotY = target.y;
         dp.rotZ = 0;
         dp.cube.style.transform = `rotateX(${target.x}deg) rotateY(${target.y}deg) rotateZ(0deg)`;
-        dp.cube.style.transition = 'transform 0.15s ease';
-        setTimeout(() => { dp.cube.style.transition = 'none'; }, 200);
+        dp.cube.style.transition = 'transform 0.2s ease-out';
+        setTimeout(() => { dp.cube.style.transition = 'none'; }, 240);
       }
       animating = false;
 
