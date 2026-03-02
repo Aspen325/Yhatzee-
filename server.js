@@ -188,7 +188,8 @@ function getGameState(room, forPlayerId) {
     gameOver: room.gameOver,
     winner: room.winner,
     maxPlayers: room.maxPlayers,
-    started: room.started
+    started: room.started,
+    hostId: room.hostId
   };
 }
 
@@ -266,25 +267,30 @@ io.on('connection', (socket) => {
       return;
     }
 
-    if (room.started) {
-      // Allow reconnection
-      const existing = room.players.find(p => p.name === playerName);
-      if (existing) {
-        playerId = existing.id;
-        currentRoom = room;
-        room.connections.add(playerId);
-        room.lastActivity = Date.now();
-        // Update the player id mapping for the new socket
-        const oldId = existing.id;
-        existing.id = socket.id;
-        room.connections.delete(oldId);
-        room.connections.add(socket.id);
-        playerId = socket.id;
-        socket.join(room.id);
-        socket.emit('room-joined', { roomCode: room.code, roomId: room.id });
-        io.to(room.id).emit('game-state', getGameState(room, playerId));
-        return;
+    const existing = room.players.find(p => p.name === playerName);
+
+    // Allow reconnection with same player name (both pre-game and in-progress)
+    if (existing) {
+      const oldId = existing.id;
+      existing.id = socket.id;
+
+      if (room.hostId === oldId) {
+        room.hostId = socket.id;
       }
+
+      currentRoom = room;
+      playerId = socket.id;
+      room.connections.delete(oldId);
+      room.connections.add(socket.id);
+      room.lastActivity = Date.now();
+
+      socket.join(room.id);
+      socket.emit('room-joined', { roomCode: room.code, roomId: room.id });
+      io.to(room.id).emit('game-state', getGameState(room, playerId));
+      return;
+    }
+
+    if (room.started) {
       socket.emit('error-msg', { message: 'Game already in progress.' });
       return;
     }
@@ -348,6 +354,8 @@ io.on('connection', (socket) => {
     if (room.gameOver) return;
     if (room.players[room.currentPlayerIndex].id !== playerId) return;
     if (room.rollsLeft === 3 || room.rollsLeft === 0) return;
+
+    if (!Number.isInteger(index) || index < 0 || index >= room.held.length) return;
 
     room.held[index] = !room.held[index];
     room.lastActivity = Date.now();
