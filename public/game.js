@@ -118,6 +118,12 @@ socket.on('game-state', (state) => {
   myId = socket.id;
   isHost = state.hostId === myId;
 
+  // If a new turn starts with cleared dice, force animation gate off.
+  // This prevents clients getting stuck waiting for a prior rAF cycle.
+  if (state.started && state.rollsLeft === 3 && state.dice.every(d => d === 0)) {
+    animating = false;
+  }
+
   if (state.started) {
     showScreen(gameScreen);
     renderGame();
