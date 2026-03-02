@@ -426,8 +426,9 @@ function launchDiceAnimation(finalValues) {
       }
       animating = false;
 
-      // After animation, re-render with held state
-      if (gameState) renderDiceStatic();
+      // After animation, fully re-render so controls (e.g. Roll button disabled state)
+      // reflect the latest turn/state that may have changed during the animation.
+      if (gameState) renderGame();
     }
   });
 }
