@@ -116,6 +116,7 @@ socket.on('game-started', () => showScreen(gameScreen));
 socket.on('game-state', (state) => {
   gameState = state;
   myId = socket.id;
+  isHost = state.hostId === myId;
 
   if (state.started) {
     showScreen(gameScreen);
