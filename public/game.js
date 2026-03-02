@@ -234,6 +234,14 @@ function getTableBounds() {
   return { w: rect.width, h: rect.height };
 }
 
+function setDiePosition(dp) {
+  dp.el.style.transform = `translate3d(${dp.x}px, ${dp.y}px, 0)`;
+}
+
+function setShadowPosition(dp) {
+  dp.shadow.style.transform = `translate3d(${dp.x + 2}px, ${dp.y + DIE_SIZE + 2}px, 0) scaleX(${dp.shadowScale || 1})`;
+}
+
 function initDice() {
   feltSurface.innerHTML = '';
   dicePhysics = [];
@@ -266,8 +274,9 @@ function initDice() {
       index: i
     });
 
-    die.style.left = startX + 'px';
-    die.style.top = startY + 'px';
+    setDiePosition(dicePhysics[i]);
+    dicePhysics[i].shadowScale = 1;
+    setShadowPosition(dicePhysics[i]);
     die.style.opacity = '0';
   }
 }
@@ -335,7 +344,6 @@ function launchDiceAnimation(finalValues) {
     const dt = Math.min((now - previousTime) / FRAME_TIME, 2);
     previousTime = now;
 
-    const bounds = getTableBounds();
     const margin = 20;
 
     for (let i = 0; i < 5; i++) {
@@ -399,18 +407,14 @@ function launchDiceAnimation(finalValues) {
       }
 
       // Update DOM
-      dp.el.style.left = dp.x + 'px';
-      dp.el.style.top = dp.y + 'px';
+      setDiePosition(dp);
       dp.cube.style.transform = `rotateX(${dp.rotX}deg) rotateY(${dp.rotY}deg) rotateZ(${dp.rotZ}deg)`;
 
       // Shadow follows die
-      dp.shadow.style.left = (dp.x + 2) + 'px';
-      dp.shadow.style.top = (dp.y + DIE_SIZE + 2) + 'px';
-
       // Dynamic shadow size based on spin intensity
       const spinIntensity = Math.min(1, (Math.abs(dp.vRotX) + Math.abs(dp.vRotY)) / 18);
-      const shadowScale = 1 + spinIntensity * 0.28;
-      dp.shadow.style.transform = `scaleX(${shadowScale})`;
+      dp.shadowScale = 1 + spinIntensity * 0.28;
+      setShadowPosition(dp);
       dp.shadow.style.opacity = 0.28 + spinIntensity * 0.18;
     }
 
@@ -486,9 +490,9 @@ function renderDiceStatic() {
     });
 
     // Position die shadow
-    dp.shadow.style.left = (dp.x + 2) + 'px';
-    dp.shadow.style.top = (dp.y + DIE_SIZE + 2) + 'px';
-    dp.shadow.style.transform = 'scaleX(1)';
+    dp.shadowScale = 1;
+    setDiePosition(dp);
+    setShadowPosition(dp);
 
     // Show/hide held tag
     let tag = dp.el.querySelector('.die-held-tag');
