@@ -8,8 +8,13 @@ let myId = null;
 let possibleScores = null;
 let isHost = false;
 let selectedMaxPlayers = 2;
-let dicePhysics = []; // physics objects for each die
-let animating = false;
+let threeDice     = []; // Three.js die objects
+let threeScene    = null;
+let threeCamera   = null;
+let threeRenderer = null;
+let threeRAF      = null;
+let faceQuats     = {};
+let animating     = false;
 let finalDiceValues = [0,0,0,0,0];
 
 // ─── DOM refs ──────────────────────────────────────────────
@@ -152,464 +157,408 @@ socket.on('dice-rolled', ({ dice }) => {
 socket.on('player-disconnected', () => {});
 
 // ═══════════════════════════════════════════════════════════════
-//  3D DICE PHYSICS ENGINE
+//  THREE.JS 3D DICE ENGINE
 // ═══════════════════════════════════════════════════════════════
 
-const DIE_SIZE = 64;
-const HALF = DIE_SIZE / 2;
-const ANIM_DURATION = 2600; // ms total
-const FRAME_TIME = 16.667; // ~60fps baseline for dt normalization
-const FRICTION = 0.992;
-const ANGULAR_FRICTION = 0.986;
-const WALL_BOUNCE = 0.72;
-const DIE_COLLISION_DISTANCE = DIE_SIZE * 0.9;
-const DIE_COLLISION_PUSH = 0.6;
-const SLOT_SETTLE_FORCE = 0.03;
+const ANIM_DURATION   = 2600;    // ms total
+const DIE_HALF_W      = 0.50;    // half-size of die cube (world units)
+const TABLE_W         = 9.0;     // world table width
+const TABLE_D         = 5.5;     // world table depth
+const FRICTION_L      = 0.987;   // linear friction per frame
+const FRICTION_A      = 0.979;   // angular friction per frame
+const WALL_RESTITUTION = 0.60;
+const SLOT_PULL       = 0.032;
+const COLL_DIST       = DIE_HALF_W * 2.15;
+const COLL_PUSH       = 0.55;
 
-// Rotation values that show each face front-facing
-const FACE_ROTATIONS = {
-  1: { x: 0,   y: 0   },
-  2: { x: 0,   y: 180 },
-  3: { x: 0,   y: 90  },
-  4: { x: 0,   y: -90 },
-  5: { x: -90, y: 0   },
-  6: { x: 90,  y: 0   },
+// ─── Dot layout (normalised 0-1 within face) ─────────────────
+const DOT_LAYOUTS = {
+  1: [[.50,.50]],
+  2: [[.28,.28],[.72,.72]],
+  3: [[.28,.28],[.50,.50],[.72,.72]],
+  4: [[.28,.28],[.72,.28],[.28,.72],[.72,.72]],
+  5: [[.28,.28],[.72,.28],[.50,.50],[.28,.72],[.72,.72]],
+  6: [[.28,.22],[.72,.22],[.28,.50],[.72,.50],[.28,.78],[.72,.78]]
 };
 
-function createDieElement(index) {
-  // Remove old one if exists
-  const old = feltSurface.querySelector(`[data-die-index="${index}"]`);
-  if (old) old.remove();
-  const oldShadow = feltSurface.querySelector(`[data-shadow-index="${index}"]`);
-  if (oldShadow) oldShadow.remove();
+// ─── Canvas texture for a single face ───────────────────────
+function createFaceTex(value, isHeld) {
+  const S = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = S;
+  const ctx = canvas.getContext('2d');
 
-  // Shadow
-  const shadow = document.createElement('div');
-  shadow.className = 'die-shadow';
-  shadow.dataset.shadowIndex = index;
-  feltSurface.appendChild(shadow);
-
-  // Die container
-  const die = document.createElement('div');
-  die.className = 'die-3d';
-  die.dataset.dieIndex = index;
-
-  // Cube
-  const cube = document.createElement('div');
-  cube.className = 'die-cube';
-
-  // 6 faces
-  for (let f = 1; f <= 6; f++) {
-    const face = document.createElement('div');
-    face.className = `die-face die-face-${f}`;
-    const dots = getDotPositions(f);
-    dots.forEach(() => {
-      const dot = document.createElement('div');
-      dot.className = 'dot';
-      face.appendChild(dot);
-    });
-    cube.appendChild(face);
+  // Background gradient
+  const bg = ctx.createLinearGradient(0, 0, S, S);
+  if (isHeld) {
+    bg.addColorStop(0, '#e8f5e9'); bg.addColorStop(.5, '#a5d6a7'); bg.addColorStop(1, '#81c784');
+  } else {
+    bg.addColorStop(0, '#fefaf0'); bg.addColorStop(.5, '#f5e6c8'); bg.addColorStop(1, '#e8d5a8');
   }
 
-  die.appendChild(cube);
-  feltSurface.appendChild(die);
+  // Rounded-rect face
+  const r = 16;
+  ctx.beginPath();
+  ctx.moveTo(r, 0); ctx.lineTo(S - r, 0);
+  ctx.quadraticCurveTo(S, 0, S, r); ctx.lineTo(S, S - r);
+  ctx.quadraticCurveTo(S, S, S - r, S); ctx.lineTo(r, S);
+  ctx.quadraticCurveTo(0, S, 0, S - r); ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0); ctx.closePath();
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.strokeStyle = isHeld ? '#4caf50' : '#c8a96e';
+  ctx.lineWidth = 5;
+  ctx.stroke();
 
-  // Click handler for hold/unhold
-  die.addEventListener('click', () => {
-    if (!gameState || animating) return;
-    const cp = gameState.players[gameState.currentPlayerIndex];
-    if (!cp || cp.id !== myId) return;
-    if (gameState.rollsLeft === 3 || gameState.rollsLeft === 0) return;
-    if (gameState.dice[index] === 0) return;
-    socket.emit('toggle-hold', { index });
+  // Dots
+  DOT_LAYOUTS[value].forEach(([px, py]) => {
+    const x = px * S, y = py * S;
+    const dg = ctx.createRadialGradient(x - 4, y - 4, 1, x, y, 11);
+    dg.addColorStop(0, isHeld ? '#1b5e20' : '#4a3520');
+    dg.addColorStop(1, isHeld ? '#0d3510' : '#2c1810');
+    ctx.fillStyle = dg;
+    ctx.beginPath(); ctx.arc(x, y, 11, 0, Math.PI * 2); ctx.fill();
   });
 
-  return { die, cube, shadow };
+  return new THREE.CanvasTexture(canvas);
 }
 
-function getDotPositions(value) {
-  // Returns array of length `value` (dots just need to exist; CSS handles layout via flex)
-  return new Array(value).fill(0);
+// ─── Quaternions: rotate so face-N points toward +Y (up) ─────
+// BoxGeometry material order: +X, -X, +Y, -Y, +Z, -Z
+// We assign values:            1    6   2    5   3    4
+function buildFaceQuats() {
+  const Q = THREE.Quaternion, E = THREE.Euler;
+  faceQuats[1] = new Q().setFromEuler(new E(0,          0,  Math.PI / 2)); // +X → +Y
+  faceQuats[2] = new Q();                                                   // +Y already up
+  faceQuats[3] = new Q().setFromEuler(new E(-Math.PI / 2, 0, 0));          // +Z → +Y
+  faceQuats[4] = new Q().setFromEuler(new E( Math.PI / 2, 0, 0));          // -Z → +Y
+  faceQuats[5] = new Q().setFromEuler(new E( Math.PI,     0, 0));          // -Y → +Y
+  faceQuats[6] = new Q().setFromEuler(new E(0,          0, -Math.PI / 2)); // -X → +Y
 }
 
-function getTableBounds() {
+// ─── Create one die mesh with 6 canvas-texture faces ─────────
+const FACE_ORDER = [1, 6, 2, 5, 3, 4]; // maps material index → pip value
+function createDieMesh() {
+  const geo  = new THREE.BoxGeometry(1, 1, 1);
+  const mats = FACE_ORDER.map(v =>
+    new THREE.MeshLambertMaterial({ map: createFaceTex(v, false) })
+  );
+  return new THREE.Mesh(geo, mats);
+}
+
+// ─── Initialise Three.js scene (idempotent) ──────────────────
+function initThreeJS() {
+  if (threeRenderer) return; // already set up
+
+  threeScene = new THREE.Scene();
+
+  // Lighting
+  threeScene.add(new THREE.AmbientLight(0xffffff, 0.75));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.80);
+  sun.position.set(3, 10, 5);
+  threeScene.add(sun);
+  const fill = new THREE.DirectionalLight(0x88aaff, 0.30);
+  fill.position.set(-5, 4, -3);
+  threeScene.add(fill);
+
+  // Renderer (transparent so the CSS felt shows through)
   const rect = feltSurface.getBoundingClientRect();
-  return { w: rect.width, h: rect.height };
+  threeRenderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+  threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  threeRenderer.setSize(rect.width || 600, rect.height || 400);
+  threeRenderer.domElement.style.cssText =
+    'position:absolute;inset:0;pointer-events:none;z-index:5;';
+  feltSurface.appendChild(threeRenderer.domElement);
+
+  // Camera — perspective from above-and-in-front
+  const aspect = (rect.width || 600) / Math.max(rect.height || 400, 1);
+  threeCamera = new THREE.PerspectiveCamera(48, aspect, 0.1, 100);
+  threeCamera.position.set(0, 9, 7);
+  threeCamera.lookAt(0, 0, 0);
+
+  buildFaceQuats();
+
+  // Click-to-hold via raycasting
+  feltSurface.addEventListener('click', onFeltClick);
 }
 
-function setDiePosition(dp) {
-  dp.el.style.transform = `translate3d(${dp.x}px, ${dp.y}px, 0)`;
+// ─── Hold toggle via raycasting ──────────────────────────────
+function onFeltClick(e) {
+  if (!gameState || animating || !threeDice.length) return;
+  const cp = gameState.players[gameState.currentPlayerIndex];
+  if (!cp || cp.id !== myId) return;
+  if (gameState.rollsLeft === 3 || gameState.rollsLeft === 0) return;
+
+  const rect = feltSurface.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width)  *  2 - 1,
+   -((e.clientY - rect.top)  / rect.height) *  2 + 1
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(mouse, threeCamera);
+  const hits = ray.intersectObjects(threeDice.map(d => d.mesh));
+  if (!hits.length) return;
+  const idx = threeDice.findIndex(d => d.mesh === hits[0].object);
+  if (idx < 0 || gameState.dice[idx] === 0) return;
+  socket.emit('toggle-hold', { index: idx });
 }
 
-function setShadowPosition(dp) {
-  dp.shadow.style.transform = `translate3d(${dp.x + 2}px, ${dp.y + DIE_SIZE + 2}px, 0) scaleX(${dp.shadowScale || 1})`;
+// ─── Fixed landing slots (identical for every client) ────────
+function getLandingSlots() {
+  return [
+    { x: -3.0, z:  0.40 },
+    { x: -1.5, z: -0.40 },
+    { x:  0.0, z:  0.40 },
+    { x:  1.5, z: -0.40 },
+    { x:  3.0, z:  0.40 },
+  ];
 }
 
-function getLandingSlots(bounds) {
-  const centerX = bounds.w / 2 - HALF;
-  const centerY = bounds.h / 2 - HALF;
-  const orbitRadiusX = Math.min(128, Math.max(84, bounds.w * 0.16));
-  const orbitRadiusY = Math.min(90, Math.max(64, bounds.h * 0.16));
-  const angleOffset = (Math.random() - 0.5) * 0.35;
+// ─── Dice-vs-dice collision resolution ───────────────────────
+function resolveCollisions() {
+  const minX = -TABLE_W / 2 + DIE_HALF_W, maxX = TABLE_W / 2 - DIE_HALF_W;
+  const minZ = -TABLE_D / 2 + DIE_HALF_W, maxZ = TABLE_D / 2 - DIE_HALF_W;
 
-  return Array.from({ length: 5 }, (_, i) => {
-    const angle = angleOffset + i * ((Math.PI * 2) / 5);
-    const jitterX = (Math.random() - 0.5) * 10;
-    const jitterY = (Math.random() - 0.5) * 8;
+  for (let i = 0; i < threeDice.length; i++) {
+    for (let j = i + 1; j < threeDice.length; j++) {
+      const a = threeDice[i], b = threeDice[j];
+      const dx = b.mesh.position.x - a.mesh.position.x;
+      const dz = b.mesh.position.z - a.mesh.position.z;
+      const dist = Math.hypot(dx, dz);
+      if (!dist || dist >= COLL_DIST) continue;
 
-    return {
-      x: centerX + Math.cos(angle) * orbitRadiusX + jitterX,
-      y: centerY + Math.sin(angle) * orbitRadiusY + jitterY,
-    };
-  });
-}
+      const overlap = COLL_DIST - dist;
+      const nx = dx / dist, nz = dz / dist;
+      const aM = !a.held && !a.settled, bM = !b.held && !b.settled;
 
-function applyDieCollisions(bounds) {
-  const margin = 20;
-  const minX = margin;
-  const maxX = bounds.w - DIE_SIZE - margin;
-  const minY = margin;
-  const maxY = bounds.h - DIE_SIZE - margin;
-
-  for (let i = 0; i < dicePhysics.length; i++) {
-    for (let j = i + 1; j < dicePhysics.length; j++) {
-      const a = dicePhysics[i];
-      const b = dicePhysics[j];
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dist = Math.hypot(dx, dy);
-      if (!dist || dist >= DIE_COLLISION_DISTANCE) continue;
-
-      const overlap = DIE_COLLISION_DISTANCE - dist;
-      const nx = dx / dist;
-      const ny = dy / dist;
-
-      const aMovable = !a.held;
-      const bMovable = !b.held;
-
-      if (aMovable && bMovable) {
-        a.x -= nx * overlap * 0.5;
-        a.y -= ny * overlap * 0.5;
-        b.x += nx * overlap * 0.5;
-        b.y += ny * overlap * 0.5;
-      } else if (aMovable) {
-        a.x -= nx * overlap;
-        a.y -= ny * overlap;
-      } else if (bMovable) {
-        b.x += nx * overlap;
-        b.y += ny * overlap;
+      if (aM && bM) {
+        a.mesh.position.x -= nx * overlap * 0.5; a.mesh.position.z -= nz * overlap * 0.5;
+        b.mesh.position.x += nx * overlap * 0.5; b.mesh.position.z += nz * overlap * 0.5;
+        a.vel.x -= nx * COLL_PUSH; a.vel.z -= nz * COLL_PUSH;
+        b.vel.x += nx * COLL_PUSH; b.vel.z += nz * COLL_PUSH;
+        a.angVel.y += (Math.random() - 0.5) * 3;
+        b.angVel.y += (Math.random() - 0.5) * 3;
+      } else if (aM) {
+        a.mesh.position.x -= nx * overlap; a.mesh.position.z -= nz * overlap;
+        a.vel.x -= nx * COLL_PUSH; a.vel.z -= nz * COLL_PUSH;
+      } else if (bM) {
+        b.mesh.position.x += nx * overlap; b.mesh.position.z += nz * overlap;
+        b.vel.x += nx * COLL_PUSH; b.vel.z += nz * COLL_PUSH;
       }
 
-      const impulseX = nx * DIE_COLLISION_PUSH;
-      const impulseY = ny * DIE_COLLISION_PUSH;
-
-      if (aMovable) {
-        a.vx -= impulseX;
-        a.vy -= impulseY;
-        a.vRotZ += (Math.random() - 0.5) * 3;
+      if (aM) {
+        a.mesh.position.x = Math.max(minX, Math.min(maxX, a.mesh.position.x));
+        a.mesh.position.z = Math.max(minZ, Math.min(maxZ, a.mesh.position.z));
       }
-      if (bMovable) {
-        b.vx += impulseX;
-        b.vy += impulseY;
-        b.vRotZ += (Math.random() - 0.5) * 3;
-      }
-
-      if (aMovable) {
-        a.x = Math.min(maxX, Math.max(minX, a.x));
-        a.y = Math.min(maxY, Math.max(minY, a.y));
-      }
-      if (bMovable) {
-        b.x = Math.min(maxX, Math.max(minX, b.x));
-        b.y = Math.min(maxY, Math.max(minY, b.y));
+      if (bM) {
+        b.mesh.position.x = Math.max(minX, Math.min(maxX, b.mesh.position.x));
+        b.mesh.position.z = Math.max(minZ, Math.min(maxZ, b.mesh.position.z));
       }
     }
   }
 }
 
+// ─── initDice: create/reset the 5 die objects ────────────────
 function initDice() {
-  feltSurface.innerHTML = '';
-  dicePhysics = [];
-  const bounds = getTableBounds();
+  initThreeJS();
+  threeDice.forEach(d => threeScene.remove(d.mesh));
+  threeDice = [];
 
+  const slots = getLandingSlots();
   for (let i = 0; i < 5; i++) {
-    const { die, cube, shadow } = createDieElement(i);
-
-    // Place dice in a neat row in the center
-    const startX = (bounds.w / 2) - (5 * 40) + i * 80;
-    const startY = bounds.h / 2 - HALF;
-
-    dicePhysics.push({
-      el: die,
-      cube,
-      shadow,
-      x: startX,
-      y: startY,
-      vx: 0,
-      vy: 0,
-      rotX: 0,
-      rotY: 0,
-      rotZ: 0,
-      vRotX: 0,
-      vRotY: 0,
-      vRotZ: 0,
+    const mesh = createDieMesh();
+    mesh.position.set(slots[i].x, DIE_HALF_W, slots[i].z);
+    mesh.visible = false;
+    threeScene.add(mesh);
+    threeDice.push({
+      mesh,
+      vel:         new THREE.Vector3(),
+      angVel:      new THREE.Vector3(),
+      held:        false,
+      settled:     true,
       targetValue: 0,
-      held: false,
-      settled: true,
-      index: i
+      slotX:       slots[i].x,
+      slotZ:       slots[i].z,
+      index:       i,
     });
-
-    setDiePosition(dicePhysics[i]);
-    dicePhysics[i].shadowScale = 1;
-    setShadowPosition(dicePhysics[i]);
-    die.style.opacity = '0';
   }
+  threeRenderer.render(threeScene, threeCamera);
 }
 
+// ─── Main animation entry point ──────────────────────────────
 function launchDiceAnimation(finalValues) {
   if (animating) return;
   animating = true;
 
-  const bounds = getTableBounds();
-  const margin = 20; // inside the wood border
-
-  const landingSlots = getLandingSlots(bounds);
+  const slots  = getLandingSlots();
+  const halfW  = TABLE_W / 2 - DIE_HALF_W;
+  const halfD  = TABLE_D / 2 - DIE_HALF_W;
+  const tmpQ   = new THREE.Quaternion();
 
   for (let i = 0; i < 5; i++) {
-    const dp = dicePhysics[i];
+    const d = threeDice[i];
+    if (d.held) { d.settled = true; continue; }
 
-    if (dp.held) {
-      // Held dice don't move
-      dp.settled = true;
-      continue;
-    }
+    d.targetValue = finalValues[i];
+    d.settled     = false;
+    d.slotX       = slots[i].x;
+    d.slotZ       = slots[i].z;
+    d.mesh.visible = true;
 
-    dp.targetValue = finalValues[i];
-    dp.settled = false;
-    dp.el.style.opacity = '1';
-
-    dp.slotX = landingSlots[i].x;
-    dp.slotY = landingSlots[i].y;
-
-    // Launch from outside edges, aiming through the board for a stronger roll feel
+    // Spawn just outside a random edge
     const side = Math.floor(Math.random() * 4);
-    if (side === 0) {
-      dp.x = -DIE_SIZE - 8;
-      dp.y = margin + Math.random() * (bounds.h - DIE_SIZE - margin * 2);
-    } else if (side === 1) {
-      dp.x = bounds.w + 8;
-      dp.y = margin + Math.random() * (bounds.h - DIE_SIZE - margin * 2);
-    } else if (side === 2) {
-      dp.x = margin + Math.random() * (bounds.w - DIE_SIZE - margin * 2);
-      dp.y = -DIE_SIZE - 8;
-    } else {
-      dp.x = margin + Math.random() * (bounds.w - DIE_SIZE - margin * 2);
-      dp.y = bounds.h + 8;
-    }
+    let sx, sz;
+    if      (side === 0) { sx = -TABLE_W / 2 - 0.8; sz = (Math.random() - 0.5) * TABLE_D; }
+    else if (side === 1) { sx =  TABLE_W / 2 + 0.8; sz = (Math.random() - 0.5) * TABLE_D; }
+    else if (side === 2) { sx = (Math.random() - 0.5) * TABLE_W; sz = -TABLE_D / 2 - 0.8; }
+    else                 { sx = (Math.random() - 0.5) * TABLE_W; sz =  TABLE_D / 2 + 0.8; }
+    d.mesh.position.set(sx, DIE_HALF_W, sz);
 
-    const toSlotX = dp.slotX - dp.x;
-    const toSlotY = dp.slotY - dp.y;
-    const towardSlotLen = Math.max(1, Math.hypot(toSlotX, toSlotY));
-    const entrySpeed = 7 + Math.random() * 3;
-    dp.vx = (toSlotX / towardSlotLen) * entrySpeed + (Math.random() - 0.5) * 2.4;
-    dp.vy = (toSlotY / towardSlotLen) * entrySpeed + (Math.random() - 0.5) * 2.4;
+    // Velocity aimed at landing slot + small random spread
+    const dx = d.slotX - sx, dz = d.slotZ - sz;
+    const len = Math.hypot(dx, dz) || 1;
+    const spd = 7 + Math.random() * 3;
+    d.vel.set(
+      (dx / len) * spd + (Math.random() - 0.5) * 2.5,
+      0,
+      (dz / len) * spd + (Math.random() - 0.5) * 2.5
+    );
 
-    // Random spin with slightly lower jitter
-    dp.vRotX = (Math.random() - 0.5) * 34;
-    dp.vRotY = (Math.random() - 0.5) * 34;
-    dp.vRotZ = (Math.random() - 0.5) * 24;
+    // Random tumble spin
+    d.angVel.set(
+      (Math.random() - 0.5) * 14,
+      (Math.random() - 0.5) * 14,
+      (Math.random() - 0.5) * 10
+    );
+
+    // Random start orientation
+    d.mesh.quaternion.set(
+      Math.random() - 0.5, Math.random() - 0.5,
+      Math.random() - 0.5, Math.random() - 0.5
+    ).normalize();
   }
 
   const startTime = performance.now();
-  let previousTime = startTime;
+  let prevTime = startTime;
 
-  requestAnimationFrame(function animate(now) {
-    const elapsed = now - startTime;
+  function animate(now) {
+    const elapsed  = now - startTime;
     const progress = Math.min(elapsed / ANIM_DURATION, 1);
-    const dt = Math.min((now - previousTime) / FRAME_TIME, 2);
-    previousTime = now;
+    const dt       = Math.min((now - prevTime) / 16.667, 2.5);
+    prevTime = now;
 
-    const margin = 20;
+    const slowdown = 1 - progress * progress * 0.65;
 
     for (let i = 0; i < 5; i++) {
-      const dp = dicePhysics[i];
-      if (dp.held || dp.settled) continue;
+      const d = threeDice[i];
+      if (d.held || d.settled) continue;
 
-      // Smooth deceleration curve from energetic -> settled
-      const slowdown = 1 - (progress * progress * 0.6);
+      // Translate
+      d.mesh.position.x += d.vel.x * slowdown * dt;
+      d.mesh.position.z += d.vel.z * slowdown * dt;
 
-      // Apply velocity with frame-normalized delta
-      dp.x += dp.vx * slowdown * dt;
-      dp.y += dp.vy * slowdown * dt;
-
-      // Bounce off walls
-      const minX = margin;
-      const maxX = bounds.w - DIE_SIZE - margin;
-      const minY = margin;
-      const maxY = bounds.h - DIE_SIZE - margin;
-
-      if (dp.x < minX) {
-        dp.x = minX;
-        dp.vx = Math.abs(dp.vx) * WALL_BOUNCE;
-        dp.vRotY += (Math.random() - 0.5) * 6;
-      } else if (dp.x > maxX) {
-        dp.x = maxX;
-        dp.vx = -Math.abs(dp.vx) * WALL_BOUNCE;
-        dp.vRotY += (Math.random() - 0.5) * 6;
+      // Wall bounce
+      if (d.mesh.position.x < -halfW) {
+        d.mesh.position.x = -halfW;
+        d.vel.x = Math.abs(d.vel.x) * WALL_RESTITUTION;
+        d.angVel.y += (Math.random() - 0.5) * 5;
+      } else if (d.mesh.position.x > halfW) {
+        d.mesh.position.x = halfW;
+        d.vel.x = -Math.abs(d.vel.x) * WALL_RESTITUTION;
+        d.angVel.y += (Math.random() - 0.5) * 5;
+      }
+      if (d.mesh.position.z < -halfD) {
+        d.mesh.position.z = -halfD;
+        d.vel.z = Math.abs(d.vel.z) * WALL_RESTITUTION;
+        d.angVel.x += (Math.random() - 0.5) * 5;
+      } else if (d.mesh.position.z > halfD) {
+        d.mesh.position.z = halfD;
+        d.vel.z = -Math.abs(d.vel.z) * WALL_RESTITUTION;
+        d.angVel.x += (Math.random() - 0.5) * 5;
       }
 
-      if (dp.y < minY) {
-        dp.y = minY;
-        dp.vy = Math.abs(dp.vy) * WALL_BOUNCE;
-        dp.vRotX += (Math.random() - 0.5) * 6;
-      } else if (dp.y > maxY) {
-        dp.y = maxY;
-        dp.vy = -Math.abs(dp.vy) * WALL_BOUNCE;
-        dp.vRotX += (Math.random() - 0.5) * 6;
-      }
+      // Friction
+      d.vel.x    *= Math.pow(FRICTION_L, dt);
+      d.vel.z    *= Math.pow(FRICTION_L, dt);
+      d.angVel.x *= Math.pow(FRICTION_A, dt);
+      d.angVel.y *= Math.pow(FRICTION_A, dt);
+      d.angVel.z *= Math.pow(FRICTION_A, dt);
 
-      // Apply friction using dt normalization
-      dp.vx *= Math.pow(FRICTION, dt);
-      dp.vy *= Math.pow(FRICTION, dt);
-      dp.vRotX *= Math.pow(ANGULAR_FRICTION, dt);
-      dp.vRotY *= Math.pow(ANGULAR_FRICTION, dt);
-      dp.vRotZ *= Math.pow(ANGULAR_FRICTION, dt);
-
-      // Pull toward its unique landing slot in the second half
+      // Pull toward landing slot in second half
       if (progress > 0.5) {
-        const settleT = (progress - 0.5) / 0.5;
-        const slotPull = SLOT_SETTLE_FORCE * settleT;
-        dp.vx += (dp.slotX - dp.x) * slotPull;
-        dp.vy += (dp.slotY - dp.y) * slotPull;
+        const t = (progress - 0.5) / 0.5;
+        d.vel.x += (d.slotX - d.mesh.position.x) * SLOT_PULL * t;
+        d.vel.z += (d.slotZ - d.mesh.position.z) * SLOT_PULL * t;
       }
 
-      // Rotation
-      dp.rotX += dp.vRotX * slowdown * dt;
-      dp.rotY += dp.vRotY * slowdown * dt;
-      dp.rotZ += dp.vRotZ * slowdown * dt;
-
-      // In the last 35% of animation, ease toward the final face rotation
-      if (progress > 0.65) {
-        const settle = (progress - 0.65) / 0.35; // 0 → 1
-        const ease = settle * settle * (3 - 2 * settle); // smoothstep
-        const target = FACE_ROTATIONS[dp.targetValue];
-
-        dp.rotX = lerpAngle(dp.rotX, target.x, ease * 0.18 + 0.04);
-        dp.rotY = lerpAngle(dp.rotY, target.y, ease * 0.18 + 0.04);
-        dp.rotZ *= (1 - ease * 0.2); // flatten Z rotation gradually
+      // Apply angular velocity as quaternion rotation
+      const spinMag = d.angVel.length() * slowdown * dt;
+      if (spinMag > 0.0001) {
+        tmpQ.setFromAxisAngle(d.angVel.clone().normalize(), spinMag);
+        d.mesh.quaternion.multiplyQuaternions(tmpQ, d.mesh.quaternion);
       }
 
-      // Update DOM
-      setDiePosition(dp);
-      dp.cube.style.transform = `rotateX(${dp.rotX}deg) rotateY(${dp.rotY}deg) rotateZ(${dp.rotZ}deg)`;
-
-      // Shadow follows die
-      // Dynamic shadow size based on spin intensity
-      const spinIntensity = Math.min(1, (Math.abs(dp.vRotX) + Math.abs(dp.vRotY)) / 18);
-      dp.shadowScale = 1 + spinIntensity * 0.28;
-      setShadowPosition(dp);
-      dp.shadow.style.opacity = 0.28 + spinIntensity * 0.18;
+      // Slerp toward correct face in last 35%
+      if (progress > 0.65 && d.targetValue) {
+        const t    = (progress - 0.65) / 0.35;
+        const ease = t * t * (3 - 2 * t); // smoothstep
+        d.mesh.quaternion.slerp(faceQuats[d.targetValue], ease * 0.20 + 0.04);
+      }
     }
 
-    applyDieCollisions(bounds);
+    resolveCollisions();
+    threeRenderer.render(threeScene, threeCamera);
 
     if (progress < 1) {
-      requestAnimationFrame(animate);
+      threeRAF = requestAnimationFrame(animate);
     } else {
-      // Final snap: ensure each die shows correct face
+      // Snap each die to exact slot + exact face
       for (let i = 0; i < 5; i++) {
-        const dp = dicePhysics[i];
-        if (dp.held) continue;
-        dp.settled = true;
-        const target = FACE_ROTATIONS[dp.targetValue];
-        dp.rotX = target.x;
-        dp.rotY = target.y;
-        dp.rotZ = 0;
-        if (!dp.held) {
-          dp.x = dp.slotX;
-          dp.y = dp.slotY;
-          setDiePosition(dp);
-          dp.shadowScale = 1;
-          setShadowPosition(dp);
-        }
-        dp.cube.style.transform = `rotateX(${target.x}deg) rotateY(${target.y}deg) rotateZ(0deg)`;
-        dp.cube.style.transition = 'transform 0.2s ease-out';
-        setTimeout(() => { dp.cube.style.transition = 'none'; }, 240);
+        const d = threeDice[i];
+        if (d.held) continue;
+        d.settled = true;
+        d.mesh.position.set(d.slotX, DIE_HALF_W, d.slotZ);
+        d.mesh.quaternion.copy(faceQuats[d.targetValue]);
       }
+      threeRenderer.render(threeScene, threeCamera);
       animating = false;
-
-      // After animation, fully re-render so controls (e.g. Roll button disabled state)
-      // reflect the latest turn/state that may have changed during the animation.
       if (gameState) renderGame();
     }
-  });
-}
-
-function lerpAngle(current, target, t) {
-  // Lerp current angle toward the nearest equivalent of target
-  // Find the nearest target that's a multiple of 360 away
-  let diff = target - current;
-  // Normalize to [-180, 180]
-  while (diff > 180) diff -= 360;
-  while (diff < -180) diff += 360;
-  return current + diff * t;
-}
-
-function renderDiceStatic() {
-  if (!gameState) return;
-  const { dice, held, rollsLeft } = gameState;
-  const bounds = getTableBounds();
-
-  // Ensure we have die elements
-  if (dicePhysics.length === 0) {
-    initDice();
   }
+
+  threeRAF = requestAnimationFrame(animate);
+}
+
+// ─── Static render: reposition dice between rolls ────────────
+function renderDiceStatic() {
+  if (!gameState || !threeDice.length) return;
+  const { dice, held } = gameState;
+  const slots = getLandingSlots();
 
   for (let i = 0; i < 5; i++) {
-    const dp = dicePhysics[i];
-    dp.held = held[i];
+    const d = threeDice[i];
+    const wasHeld = d.held;
+    d.held = held[i];
 
-    if (dice[i] === 0) {
-      dp.el.style.opacity = '0';
-      dp.shadow.style.opacity = '0';
-      continue;
-    }
+    if (dice[i] === 0) { d.mesh.visible = false; continue; }
 
-    dp.el.style.opacity = '1';
-    dp.shadow.style.opacity = '0.3';
-    dp.targetValue = dice[i];
+    d.mesh.visible = true;
+    d.targetValue  = dice[i];
+    d.mesh.position.set(slots[i].x, DIE_HALF_W, slots[i].z);
+    d.mesh.quaternion.copy(faceQuats[dice[i]]);
 
-    // Show correct face
-    const target = FACE_ROTATIONS[dice[i]];
-    dp.rotX = target.x;
-    dp.rotY = target.y;
-    dp.rotZ = 0;
-    dp.cube.style.transform = `rotateX(${target.x}deg) rotateY(${target.y}deg) rotateZ(0deg)`;
-
-    // Update held styling on faces
-    dp.cube.querySelectorAll('.die-face').forEach(face => {
-      face.classList.toggle('held-face', held[i]);
-    });
-
-    // Position die shadow
-    dp.shadowScale = 1;
-    setDiePosition(dp);
-    setShadowPosition(dp);
-
-    // Show/hide held tag
-    let tag = dp.el.querySelector('.die-held-tag');
-    if (held[i]) {
-      if (!tag) {
-        tag = document.createElement('div');
-        tag.className = 'die-held-tag';
-        tag.textContent = 'HOLD';
-        dp.el.appendChild(tag);
-      }
-      tag.style.display = '';
-    } else if (tag) {
-      tag.style.display = 'none';
+    // Swap face textures when hold state changes
+    if (d.held !== wasHeld) {
+      d.mesh.material.forEach((mat, fi) => {
+        mat.map.dispose();
+        mat.map = createFaceTex(FACE_ORDER[fi], d.held);
+        mat.needsUpdate = true;
+      });
     }
   }
+  threeRenderer.render(threeScene, threeCamera);
 }
+
 
 // ─── Roll Button ────────────────────────────────────────────
 
@@ -806,13 +755,14 @@ btnPlayAgain.addEventListener('click', () => {
   gameState = null;
   possibleScores = null;
   isHost = false;
-  dicePhysics = [];
+  if (threeScene) threeDice.forEach(d => threeScene.remove(d.mesh));
+  threeDice = [];
 });
 
 // ─── Master render ──────────────────────────────────────────
 
 function renderGame() {
-  if (dicePhysics.length === 0) initDice();
+  if (threeDice.length === 0) initDice();
   renderTopBar();
   if (!animating) renderDiceStatic();
   renderControls();
@@ -856,25 +806,19 @@ $$('#scorecard tbody tr[data-cat]').forEach(row => {
   });
 });
 
-// ─── Window resize: reinit dice positions ───────────────────
+// ─── Window resize: update Three.js viewport ────────────────
 
 let resizeTimeout;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimeout);
   resizeTimeout = setTimeout(() => {
-    if (gameState && gameState.started && dicePhysics.length > 0) {
-      const bounds = getTableBounds();
-      for (let i = 0; i < 5; i++) {
-        const dp = dicePhysics[i];
-        // Clamp positions to new bounds
-        dp.x = Math.min(Math.max(20, dp.x), bounds.w - DIE_SIZE - 20);
-        dp.y = Math.min(Math.max(20, dp.y), bounds.h - DIE_SIZE - 20);
-        dp.el.style.left = dp.x + 'px';
-        dp.el.style.top = dp.y + 'px';
-        dp.shadow.style.left = (dp.x + 2) + 'px';
-        dp.shadow.style.top = (dp.y + DIE_SIZE + 2) + 'px';
-      }
-    }
+    if (!threeRenderer || !threeCamera) return;
+    const rect = feltSurface.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    threeRenderer.setSize(rect.width, rect.height);
+    threeCamera.aspect = rect.width / rect.height;
+    threeCamera.updateProjectionMatrix();
+    if (!animating) threeRenderer.render(threeScene, threeCamera);
   }, 100);
 });
 
